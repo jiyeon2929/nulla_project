@@ -20,7 +20,7 @@ PORT_BOARD1 = 'COM5'
 PORT_BOARD2 = 'COM6'
 BAUD_RATE = 115200
 
-SERVER_IP = "172.18.95.27"
+SERVER_IP = "16.179.202.152"
 MEASUREMENT_URL = f"http://{SERVER_IP}:8081/api/measurements"
 IMAGE_UPLOAD_URL = f"http://{SERVER_IP}:8081/api/images/upload"
 DEVICE_ID = "DG-ESP32-001"
@@ -337,9 +337,13 @@ else:
 
 net_depth = cv2.dnn.readNet(depth_model)
 
-cap = cv2.VideoCapture(1, cv2.CAP_DSHOW)
+CAMERA_INDEX = 1
+cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
+
+
 if not cap.isOpened():
-    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    print(f"[ERROR] 외장 웹캠(장치 번호: {CAMERA_INDEX})을 열 수 없습니다. 프로그램을 종료합니다.")
+    exit(1)
 
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -353,8 +357,8 @@ def get_latest_trip_id():
         resp = requests.get(LATEST_TRIP_URL, params={"userId": USER_ID}, timeout=3)
         if resp.status_code == 200:
             return resp.json().get('data', {}).get('tripId')
-    except Exception as e:
-        print(f"[tripId 조회 에러] {e}")
+    except Exception:
+        pass
     return None
 
 def check_trip_started(trip_id):
@@ -368,7 +372,7 @@ def check_trip_started(trip_id):
             return status == 'STARTED'
     except Exception:
         pass
-    # 서버 통신 실패 시 오동작 방지를 위해 일단 True 유지하되, 필요시 조정 가능
+
     return True
 
 
@@ -499,41 +503,45 @@ try:
         board2_ok = board2_data != "B2 Offline" and board2_raw != ""
 
         # =========================================================================
-        # --- [D] 위험 5단계 제어 로직 ---
+        # --- [D] 위험 5단계 제어 로직 (초음파 단독 우선 반영) ---
         # =========================================================================
         level = 1
         danger_level = "CLEAR"
         reason = "SAFE"
         tts_msg = ""
-        box_color = (0, 255, 0)
+        box_color = (0, 0, 255)
 
-        if (front_us_dist <= 15.0 and max_box_ratio >= 0.08) or max_box_ratio >= 0.30 or pitch_diff >= 30.0:
+        # 5단계: 전방 초음파 15cm 이내 또는 큰 물체/심한 경사
+        if front_us_dist <= 15.0 or max_box_ratio >= 0.30 or pitch_diff >= 30.0:
             level = 5
             danger_level = "CRITICAL"
-            reason = f"CRITICAL HAZARD/SLOPE (PitchDiff:{pitch_diff:.1f})"
+            reason = f"CRITICAL HAZARD (FrontUS:{front_us_dist:.1f}cm, PitchDiff:{pitch_diff:.1f})"
             tts_msg = "비상! 전방 충돌 및 전복 위험, 즉시 정지하세요."
             box_color = (0, 0, 255)
 
-        elif (front_us_dist <= 30.0 and has_yolo_object) or max_box_ratio >= 0.15 or pitch_diff >= 20.0:
+        # 4단계: 전방 초음파 30cm 이내 또는 중형 물체/경사
+        elif front_us_dist <= 30.0 or max_box_ratio >= 0.15 or pitch_diff >= 20.0:
             level = 4
             danger_level = "DANGER"
-            reason = f"FRONT/SLOPE HAZARD (PitchDiff:{pitch_diff:.1f})"
+            reason = f"FRONT HAZARD (FrontUS:{front_us_dist:.1f}cm, PitchDiff:{pitch_diff:.1f})"
             tts_msg = "위험! 전방 근접 또는 경사 주의."
             box_color = (0, 0, 255)
 
+        # 3단계: 전방 초음파 60cm 이내 또는 접근 중
         elif front_us_dist <= 60.0 or pitch_diff >= 12.0 or (is_road_danger and has_yolo_object):
             level = 3
             danger_level = "WARNING"
-            reason = f"APPROACHING/SLOPE (PitchDiff:{pitch_diff:.1f})"
+            reason = f"APPROACHING (FrontUS:{front_us_dist:.1f}cm, PitchDiff:{pitch_diff:.1f})"
             tts_msg = "경고! 장애물 또는 경사로 접근 중."
             box_color = (0, 165, 255)
 
+        # 2단계: 후방 초음파 30cm 이내 또는 일반 주의
         elif has_yolo_object or is_road_danger or pitch_diff >= 6.0 or rear_us_dist <= 30.0:
             level = 2
             danger_level = "CAUTION"
             if rear_us_dist <= 30.0:
                 reason = f"REAR CAUTION ({rear_us_dist:.1f}cm)"
-                tts_msg = ""
+                tts_msg = "주의! 후방 장애물 접근."
             else:
                 reason = "FAR HAZARD / SLIGHT SLOPE"
                 tts_msg = "주의! 물체 또는 완만한 경사 감지."
@@ -544,7 +552,7 @@ try:
             danger_level = "SAFE"
             reason = "SAFE"
             tts_msg = ""
-
+            
         # --- [E] 화면 Overlay 텍스트 생성 ---
         draw_text_with_bg(yolo_frame, f"ESP-1 (Front US+Gyro): {board1_data} (PitchDiff:{pitch_diff:.1f})", (15, h - 50), scale=0.42, color=(0, 255, 255), bg_color=(20, 20, 20))
         draw_text_with_bg(yolo_frame, f"ESP-2 (Rear US): {board2_data} (Parsed:{rear_us_dist:.1f}cm)", (15, h - 25), scale=0.42, color=(0, 255, 255), bg_color=(20, 20, 20))
